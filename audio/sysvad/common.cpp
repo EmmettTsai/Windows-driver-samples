@@ -46,6 +46,121 @@ Abstract:
 #include "A2dpHpDevice.h"
 #endif // SYSVAD_A2DP_SIDEBAND
 
+
+
+__drv_allocatesMem(Mem)
+_IRQL_requires_max_(DISPATCH_LEVEL)
+__inline
+_Ret_maybenull_
+_Post_writable_byte_size_(Lookaside->L.Size)
+PVOID
+#pragma warning(suppress: 28195) // memory is not always allocated here, sometimes we reuse an entry from the list
+MyExAllocateFromNPagedLookasideList(
+    _Inout_ PNPAGED_LOOKASIDE_LIST Lookaside
+)
+
+/*++
+
+Routine Description:
+
+    This function removes (pops) the first entry from the specified
+    nonpaged lookaside list.
+
+Arguments:
+
+    Lookaside - Supplies a pointer to a nonpaged lookaside list structure.
+
+Return Value:
+
+    If an entry is removed from the specified lookaside list, then the
+    address of the entry is returned as the function value. Otherwise,
+    NULL is returned.
+
+--*/
+
+{
+
+    PVOID Entry;
+
+    Lookaside->L.TotalAllocates += 1;
+
+#if defined(_WIN2K_COMPAT_SLIST_USAGE) && defined(_X86_)
+
+    Entry = ExInterlockedPopEntrySList(&Lookaside->L.ListHead,
+        &Lookaside->Lock__ObsoleteButDoNotDelete);
+
+#else
+
+    Entry = InterlockedPopEntrySList(&Lookaside->L.ListHead);
+
+#endif
+
+    if (Entry == NULL) {
+        Lookaside->L.AllocateMisses += 1;
+        Entry = (Lookaside->L.Allocate)(Lookaside->L.Type,
+            Lookaside->L.Size,
+            Lookaside->L.Tag);
+    }
+
+    return Entry;
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+__inline
+VOID
+MyExFreeToNPagedLookasideList(
+    _Inout_ PNPAGED_LOOKASIDE_LIST Lookaside,
+    _In_ __drv_freesMem(Mem) PVOID Entry
+)
+
+/*++
+
+Routine Description:
+
+    This function inserts (pushes) the specified entry into the specified
+    nonpaged lookaside list.
+
+Arguments:
+
+    Lookaside - Supplies a pointer to a nonpaged lookaside list structure.
+
+    Entry - Supples a pointer to the entry that is inserted in the
+        lookaside list.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+
+    Lookaside->L.TotalFrees += 1;
+    if (ExQueryDepthSList(&Lookaside->L.ListHead) >= Lookaside->L.Depth) {
+        Lookaside->L.FreeMisses += 1;
+        (Lookaside->L.Free)(Entry);
+
+    }
+    else {
+
+#if defined(_WIN2K_COMPAT_SLIST_USAGE) && defined(_X86_)
+
+        ExInterlockedPushEntrySList(&Lookaside->L.ListHead,
+            (PSLIST_ENTRY)Entry,
+            &Lookaside->Lock__ObsoleteButDoNotDelete);
+
+#else
+
+        InterlockedPushEntrySList(&Lookaside->L.ListHead, (PSLIST_ENTRY)Entry);
+
+#endif
+
+    }
+
+    return;
+}
+
+
 //-----------------------------------------------------------------------------
 // CSaveData statics
 //-----------------------------------------------------------------------------
@@ -2925,7 +3040,7 @@ Arguments:
         //
         // Free the task.
         //
-        ExFreeToNPagedLookasideList(&This->m_BthHfpWorkTaskPool, task);
+        MyExFreeToNPagedLookasideList(&This->m_BthHfpWorkTaskPool, task);
     }
 }
 
@@ -3054,7 +3169,7 @@ Return Value:
     //
     // Get and init a work task.
     //
-    bthWorkTask = (BthHfpWorkTask*)ExAllocateFromNPagedLookasideList(&m_BthHfpWorkTaskPool);
+    bthWorkTask = (BthHfpWorkTask*)MyExAllocateFromNPagedLookasideList(&m_BthHfpWorkTaskPool);
     if (NULL == bthWorkTask)
     {
         DPF(D_ERROR, ("BthHfpScoInterfaceArrival: unable to allocate BthHfpWorkTask, out of memory"));
@@ -3098,7 +3213,7 @@ Done:
 
         if (bthWorkTask != NULL)
         {
-            ExFreeToNPagedLookasideList(&m_BthHfpWorkTaskPool, bthWorkTask);
+            MyExFreeToNPagedLookasideList(&m_BthHfpWorkTaskPool, bthWorkTask);
             bthWorkTask = NULL;
         }
     }
@@ -3153,7 +3268,7 @@ Return Value:
     //
     // Init a work task.
     //
-    bthWorkTask = (BthHfpWorkTask*)ExAllocateFromNPagedLookasideList(&m_BthHfpWorkTaskPool);
+    bthWorkTask = (BthHfpWorkTask*)MyExAllocateFromNPagedLookasideList(&m_BthHfpWorkTaskPool);
     if (NULL == bthWorkTask)
     {
         DPF(D_ERROR, ("BthHfpScoInterfaceRemoval: unable to allocate BthHfpWorkTask, out of memory"));
@@ -3533,7 +3648,7 @@ WorkItem    - WDF work-item object.
         //
         // Free the task.
         //
-        ExFreeToNPagedLookasideList(&This->m_UsbSidebandWorkTaskPool, task);
+        MyExFreeToNPagedLookasideList(&This->m_UsbSidebandWorkTaskPool, task);
     }
 }
 
@@ -3662,7 +3777,7 @@ NT status code.
     //
     // Get and init a work task.
     //
-    usbHsWorkTask = (UsbHsWorkTask*)ExAllocateFromNPagedLookasideList(&m_UsbSidebandWorkTaskPool);
+    usbHsWorkTask = (UsbHsWorkTask*)MyExAllocateFromNPagedLookasideList(&m_UsbSidebandWorkTaskPool);
     if (NULL == usbHsWorkTask)
     {
         DPF(D_ERROR, ("UsbSidebandInterfaceArrival: unable to allocate UsbSidebandWorkTask, out of memory"));
@@ -3706,7 +3821,7 @@ Done:
 
         if (usbHsWorkTask != NULL)
         {
-            ExFreeToNPagedLookasideList(&m_UsbSidebandWorkTaskPool, usbHsWorkTask);
+            MyExFreeToNPagedLookasideList(&m_UsbSidebandWorkTaskPool, usbHsWorkTask);
             usbHsWorkTask = NULL;
         }
     }
@@ -3761,7 +3876,7 @@ NT status code.
     //
     // Init a work task.
     //
-    usbHsWorkTask = (UsbHsWorkTask*)ExAllocateFromNPagedLookasideList(&m_UsbSidebandWorkTaskPool);
+    usbHsWorkTask = (UsbHsWorkTask*)MyExAllocateFromNPagedLookasideList(&m_UsbSidebandWorkTaskPool);
     if (NULL == usbHsWorkTask)
     {
         DPF(D_ERROR, ("UsbSidebandInterfaceRemoval: unable to allocate UsbSidebandWorkTask, out of memory"));
@@ -4211,7 +4326,7 @@ WorkItem    - WDF work-item object.
         //
         // Free the task.
         //
-        ExFreeToNPagedLookasideList(&This->m_A2dpSidebandWorkTaskPool, task);
+        MyExFreeToNPagedLookasideList(&This->m_A2dpSidebandWorkTaskPool, task);
     }
 }
 
@@ -4340,7 +4455,7 @@ NT status code.
     //
     // Get and init a work task.
     //
-    a2dpHpWorkTask = (A2dpHpWorkTask*)ExAllocateFromNPagedLookasideList(&m_A2dpSidebandWorkTaskPool);
+    a2dpHpWorkTask = (A2dpHpWorkTask*)MyExAllocateFromNPagedLookasideList(&m_A2dpSidebandWorkTaskPool);
     if (NULL == a2dpHpWorkTask)
     {
         DPF(D_ERROR, ("A2dpSidebandInterfaceArrival: unable to allocate A2dpSidebandWorkTask, out of memory"));
@@ -4384,7 +4499,7 @@ Done:
 
         if (a2dpHpWorkTask != NULL)
         {
-            ExFreeToNPagedLookasideList(&m_A2dpSidebandWorkTaskPool, a2dpHpWorkTask);
+            MyExFreeToNPagedLookasideList(&m_A2dpSidebandWorkTaskPool, a2dpHpWorkTask);
             a2dpHpWorkTask = NULL;
         }
     }
@@ -4439,7 +4554,7 @@ NT status code.
     //
     // Init a work task.
     //
-    a2dpHpWorkTask = (A2dpHpWorkTask*)ExAllocateFromNPagedLookasideList(&m_A2dpSidebandWorkTaskPool);
+    a2dpHpWorkTask = (A2dpHpWorkTask*)MyExAllocateFromNPagedLookasideList(&m_A2dpSidebandWorkTaskPool);
     if (NULL == a2dpHpWorkTask)
     {
         DPF(D_ERROR, ("A2dpSidebandInterfaceRemoval: unable to allocate A2dpSidebandWorkTask, out of memory"));
